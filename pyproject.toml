@@ -46,6 +46,9 @@ include = ["ai_platform*"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+  "integration: requires PostgreSQL, RabbitMQ, and Qdrant services"
+]
 
 [tool.ruff]
 line-length = 100

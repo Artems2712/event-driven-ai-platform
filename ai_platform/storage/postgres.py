@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 from ai_platform.events.contracts import Event
@@ -22,10 +23,15 @@ class PostgresJobOutboxRepository:
                 create table if not exists ingestion_jobs (
                   id text primary key,
                   document_id text not null,
+                  idempotency_key text unique,
                   status text not null,
                   progress integer not null,
                   updated_at timestamptz not null
                 );
+                alter table ingestion_jobs
+                add column if not exists idempotency_key text;
+                create unique index if not exists ingestion_jobs_idempotency_key_idx
+                on ingestion_jobs(idempotency_key);
                 create table if not exists outbox_events (
                   event_id text primary key,
                   event_type text not null,
@@ -42,14 +48,28 @@ class PostgresJobOutboxRepository:
         record = event_to_dict(event)
         async with self.pool.acquire() as connection:
             async with connection.transaction():
+                existing = await connection.fetchrow(
+                    """
+                    select id, document_id, idempotency_key, status, progress, updated_at
+                    from ingestion_jobs
+                    where idempotency_key = $1
+                    """,
+                    event.idempotency_key,
+                )
+                if existing is not None:
+                    return _job_from_row(existing)
+
                 await connection.execute(
                     """
-                    insert into ingestion_jobs (id, document_id, status, progress, updated_at)
-                    values ($1, $2, $3, $4, $5)
+                    insert into ingestion_jobs (
+                      id, document_id, idempotency_key, status, progress, updated_at
+                    )
+                    values ($1, $2, $3, $4, $5, $6)
                     on conflict (id) do nothing
                     """,
                     job.id,
                     job.document_id,
+                    event.idempotency_key,
                     job.status,
                     job.progress,
                     job.updated_at,
@@ -64,7 +84,7 @@ class PostgresJobOutboxRepository:
                     """,
                     event.event_id,
                     event.type,
-                    record["payload"],
+                    json.dumps(record["payload"]),
                     event.idempotency_key,
                     event.trace_id,
                     event.created_at,
@@ -75,7 +95,7 @@ class PostgresJobOutboxRepository:
         async with self.pool.acquire() as connection:
             row = await connection.fetchrow(
                 """
-                select id, document_id, status, progress, updated_at
+                select id, document_id, idempotency_key, status, progress, updated_at
                 from ingestion_jobs
                 where id = $1
                 """,
@@ -83,13 +103,7 @@ class PostgresJobOutboxRepository:
             )
         if row is None:
             return None
-        return IngestionJob(
-            id=str(row["id"]),
-            document_id=str(row["document_id"]),
-            status=row["status"],
-            progress=int(row["progress"]),
-            updated_at=row["updated_at"],
-        )
+        return _job_from_row(row)
 
     async def update_status(self, job_id: str, status: JobStatus, progress: int) -> None:
         async with self.pool.acquire() as connection:
@@ -121,7 +135,7 @@ class PostgresJobOutboxRepository:
                 {
                     "event_id": row["event_id"],
                     "type": row["event_type"],
-                    "payload": row["payload"],
+                    "payload": _payload_from_row(row["payload"]),
                     "idempotency_key": row["idempotency_key"],
                     "trace_id": row["trace_id"],
                     "created_at": row["created_at"].isoformat(),
@@ -136,3 +150,22 @@ class PostgresJobOutboxRepository:
                 "update outbox_events set published_at = now() where event_id = $1",
                 event_id,
             )
+
+
+def _job_from_row(row: Any) -> IngestionJob:
+    return IngestionJob(
+        id=str(row["id"]),
+        document_id=str(row["document_id"]),
+        idempotency_key=str(row["idempotency_key"]) if row["idempotency_key"] else None,
+        status=row["status"],
+        progress=int(row["progress"]),
+        updated_at=row["updated_at"],
+    )
+
+
+def _payload_from_row(value: Any) -> dict[str, str]:
+    if isinstance(value, str):
+        parsed = json.loads(value)
+    else:
+        parsed = dict(value)
+    return {str(key): str(item) for key, item in parsed.items()}

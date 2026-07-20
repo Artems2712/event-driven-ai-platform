@@ -1,7 +1,7 @@
 from typing import Protocol
 
 from ai_platform.events.contracts import Event
-from ai_platform.storage.jobs import IngestionJob
+from ai_platform.storage.jobs import IngestionJob, JobStatus
 from ai_platform.workers.document_worker import DocumentWorker
 
 
@@ -15,7 +15,7 @@ class JobOutboxRepository(Protocol):
     async def mark_published(self, event_id: str) -> None:
         """Mark one outbox event as published."""
 
-    async def update_status(self, job_id: str, status: str, progress: int) -> None:
+    async def update_status(self, job_id: str, status: JobStatus, progress: int) -> None:
         """Update job status."""
 
 
@@ -47,7 +47,7 @@ class ProductionIngestionPipeline:
         text: str,
         idempotency_key: str,
     ) -> IngestionJob:
-        job = IngestionJob(document_id=document_id)
+        job = IngestionJob(document_id=document_id, idempotency_key=idempotency_key)
         event = Event(
             type="document.ingest.requested",
             payload={

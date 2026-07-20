@@ -8,7 +8,7 @@ The default API uses in-memory adapters so the project is fast to inspect and de
 
 - FastAPI gateway for document ingestion jobs.
 - In-memory reference flow for jobs, outbox, broker, idempotency, retries, and workers.
-- PostgreSQL repository that stores an ingestion job and outbox event in one transaction.
+- PostgreSQL repository that stores an ingestion job and outbox event in one transaction and returns the existing job for duplicate idempotency keys.
 - RabbitMQ publisher built with `aio-pika`.
 - Qdrant indexer with deterministic hashing vectors for document text.
 - Production pipeline wiring:
@@ -23,7 +23,7 @@ POST /documents
 ```
 
 - Docker Compose topology for PostgreSQL, Redis, RabbitMQ, and Qdrant.
-- pytest, Ruff, mypy, and GitHub Actions.
+- pytest, Ruff, mypy, and GitHub Actions, including an external-service workflow for PostgreSQL, RabbitMQ, and Qdrant.
 
 ## Architecture
 
@@ -74,7 +74,19 @@ Adapter modules:
 - `ai_platform.vector.qdrant.QdrantDocumentIndexer`
 - `ai_platform.runtime.production.ProductionIngestionPipeline`
 
-These classes provide the real external integration path while CI keeps using fake/in-memory adapters.
+These classes provide the real external integration path. The lightweight CI workflow still covers the fast in-memory path, while `.github/workflows/integration.yml` starts PostgreSQL, RabbitMQ, and Qdrant and runs the external adapter test.
+
+Run the external test locally only when those services are available:
+
+```bash
+RUN_INTEGRATION=true \
+POSTGRES_DSN=postgresql://postgres:postgres@127.0.0.1:5432/ai_platform \
+RABBITMQ_URL=amqp://guest:guest@127.0.0.1:5672/ \
+QDRANT_URL=http://127.0.0.1:6333 \
+pytest -m integration
+```
+
+The integration test verifies that duplicate idempotency keys reuse the original PostgreSQL job, exactly one outbox event is published to RabbitMQ, and the document is upserted into Qdrant before the job is marked completed.
 
 ## Docker Compose
 
