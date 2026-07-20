@@ -1,25 +1,41 @@
-from fastapi.testclient import TestClient
+import pytest
+from httpx import ASGITransport, AsyncClient
 
 from ai_platform.api.main import app
 
 
-def test_api_creates_job_and_dispatches_outbox_event() -> None:
-    client = TestClient(app)
-    response = client.post(
-        "/documents",
-        json={
-            "document_id": "doc-api",
-            "text": "hello from api",
-            "idempotency_key": "doc-api",
-        },
-    )
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+@pytest.mark.anyio
+async def test_api_creates_job_and_dispatches_outbox_event() -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/documents",
+            json={
+                "document_id": "doc-api",
+                "text": "hello from api",
+                "idempotency_key": "doc-api",
+            },
+        )
+        dispatch_response = await client.post("/dispatch")
+        job_response = await client.get(f"/jobs/{response.json()['job_id']}")
+
     payload = response.json()
 
     assert response.status_code == 200
     assert payload["status"] == "queued"
-
-    dispatch_response = client.post("/dispatch")
     assert dispatch_response.json()["published"] >= 1
-
-    job_response = client.get(f"/jobs/{payload['job_id']}")
     assert job_response.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_api_returns_404_for_unknown_job() -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/jobs/missing")
+
+    assert response.status_code == 404

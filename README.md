@@ -1,19 +1,29 @@
 # Event-Driven AI Platform
 
-Backend architecture project for asynchronous document processing and AI generation.
+Reference implementation of event-driven AI backend patterns.
 
-This repository demonstrates the platform engineering side of AI/LLM systems: API gateway, ingestion jobs, outbox/inbox, idempotency keys, retries, dead-letter queue, worker boundaries, tracing metadata, and integration-testable event flow.
+The default API uses in-memory adapters so the project is fast to inspect and deterministic in CI. The repository also includes production adapter code for PostgreSQL job/outbox persistence, RabbitMQ event publishing, and Qdrant document indexing.
 
 ## What This Demonstrates
 
-- FastAPI API gateway for document ingestion jobs.
-- Event-driven pipeline for document parsing, embedding, retrieval indexing, generation and notification.
-- Outbox pattern for transactional event publishing.
-- Inbox/idempotency pattern for exactly-once-ish worker behavior.
-- Retry policy and dead-letter queue.
-- PostgreSQL, Redis, RabbitMQ and Qdrant in Docker Compose.
-- Worker modules that can be moved to Celery, Dramatiq or ARQ.
-- pytest, Ruff, mypy and GitHub Actions.
+- FastAPI gateway for document ingestion jobs.
+- In-memory reference flow for jobs, outbox, broker, idempotency, retries, and workers.
+- PostgreSQL repository that stores an ingestion job and outbox event in one transaction.
+- RabbitMQ publisher built with `aio-pika`.
+- Qdrant indexer with deterministic hashing vectors for document text.
+- Production pipeline wiring:
+
+```text
+POST /documents
+-> PostgreSQL transaction: job + outbox row
+-> dispatcher publishes outbox events through RabbitMQ
+-> document worker parses text
+-> Qdrant upsert stores indexed document text
+-> PostgreSQL status update marks progress/completion
+```
+
+- Docker Compose topology for PostgreSQL, Redis, RabbitMQ, and Qdrant.
+- pytest, Ruff, mypy, and GitHub Actions.
 
 ## Architecture
 
@@ -21,12 +31,13 @@ This repository demonstrates the platform engineering side of AI/LLM systems: AP
 API Gateway
   -> creates ingestion job
   -> writes outbox event
-  -> dispatcher publishes to RabbitMQ
-  -> document worker parses text
-  -> embedding worker indexes vectors in Qdrant
-  -> generation worker creates answer draft
-  -> notification worker emits WebSocket/SSE status
+  -> dispatcher publishes event
+  -> document worker processes text
+  -> vector indexer writes to Qdrant
+  -> job status is updated
 ```
+
+The in-memory implementation is intentionally small and easy to test. The production adapter classes are separated so they can be wired into a worker process without changing event contracts or worker behavior.
 
 ## Quick Start
 
@@ -37,6 +48,33 @@ pip install -e ".[dev]"
 pytest
 uvicorn ai_platform.api.main:app --reload
 ```
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+pytest
+uvicorn ai_platform.api.main:app --reload
+```
+
+## Production Adapters
+
+Install runtime dependencies:
+
+```bash
+pip install -e ".[runtime]"
+```
+
+Adapter modules:
+
+- `ai_platform.storage.postgres.PostgresJobOutboxRepository`
+- `ai_platform.events.rabbitmq.RabbitMQBroker`
+- `ai_platform.vector.qdrant.QdrantDocumentIndexer`
+- `ai_platform.runtime.production.ProductionIngestionPipeline`
+
+These classes provide the real external integration path while CI keeps using fake/in-memory adapters.
 
 ## Docker Compose
 
@@ -54,4 +92,4 @@ Services included:
 
 ## Why This Exists
 
-RAG and agents are only part of production AI engineering. A real backend also needs asynchronous ingestion, delivery guarantees, idempotent workers, retries, observability, and failure handling. This project is shaped to make those backend architecture skills visible.
+RAG and agents are only part of production AI engineering. A real backend also needs asynchronous ingestion, delivery guarantees, idempotent workers, retries, observability, and failure handling. This project is shaped to make those backend architecture skills visible without pretending every infrastructure component is enabled in the default local API.
